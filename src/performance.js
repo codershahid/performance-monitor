@@ -1,10 +1,14 @@
 function getPageSpeedData() {
-  const sheetUrl =
-    "https://docs.google.com/spreadsheets/d/1K0Uz-x6qnAS4HtvamizZ_tFQh2fpe7ohOfJh9WiPE3w/edit?gid=1697498024";
-  const spreadsheet = SpreadsheetApp.openByUrl(sheetUrl);
+  const spreadsheet = SpreadsheetApp.openByUrl(
+    "https://docs.google.com/spreadsheets/d/1K0Uz-x6qnAS4HtvamizZ_tFQh2fpe7ohOfJh9WiPE3w/edit?gid=1697498024"
+  );
 
   const urls = [
     { url: "https://boroux.com/", name: "Homepage" },
+    {
+      url: "https://boroux.com/collections/accessories-parts",
+      name: "PLP",
+    },
     // Add more URLs here as needed
   ];
   const apiKey =
@@ -12,7 +16,7 @@ function getPageSpeedData() {
 
   const validStrategies = ["mobile", "desktop"];
 
-  // Fetch data for each URL and strategy
+  // Fetch data create sheet for each URL and strategy and append a row in each sheet populated with the data
   urls.forEach((site) => {
     validStrategies.forEach((strategy) => {
       const timestamp = new Date(); // Timestamp for each request
@@ -38,93 +42,10 @@ function getPageSpeedData() {
       }
 
       // Fetch PageSpeed data
-      const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(
-        site.url
-      )}&key=${apiKey}&strategy=${encodeURIComponent(strategy)}`;
-      const response = fetchWithRetry(apiUrl);
+      let psiData = fetchDataFromPSI(strategy, site.url);
 
-      if (!response) {
-        console.error(`❌ API Request failed for ${site.url} (${strategy})`);
-        sheet.appendRow([
-          timestamp,
-          "API Error",
-          "API Error",
-          "API Error",
-          "API Error",
-          "API Error",
-          "API Error",
-          "API Error",
-          "API Error",
-          "N/A",
-        ]);
-        return;
-      }
-
-      const data = JSON.parse(response.getContentText());
-
-      // Check if Lighthouse data is available
-      if (!data.lighthouseResult) {
-        console.warn(
-          `⚠️ API returned field data (CrUX) instead of Lighthouse data for ${site.url} (${strategy})`
-        );
-        sheet.appendRow([
-          timestamp,
-          "CrUX Data Only",
-          "CrUX Data Only",
-          "CrUX Data Only",
-          "CrUX Data Only",
-          "CrUX Data Only",
-          "CrUX Data Only",
-          "CrUX Data Only",
-          "CrUX Data Only",
-          "N/A",
-        ]);
-        return;
-      }
-
-      // Extract metrics
-      const categories = data.lighthouseResult.categories || {};
-      const audits = data.lighthouseResult.audits || {};
-
-      const performance = categories.performance
-        ? categories.performance.score * 100
-        : "N/A";
-      const accessibility = categories.accessibility
-        ? categories.accessibility.score * 100
-        : "N/A";
-      const bestPractices = categories["best-practices"]
-        ? categories["best-practices"].score * 100
-        : "N/A";
-      const seo = categories.seo ? categories.seo.score * 100 : "N/A";
-
-      const fcp = audits["first-contentful-paint"]
-        ? audits["first-contentful-paint"].numericValue
-        : "N/A";
-      const lcp = audits["largest-contentful-paint"]
-        ? audits["largest-contentful-paint"].numericValue
-        : "N/A";
-      const tbt = audits["total-blocking-time"]
-        ? audits["total-blocking-time"].numericValue
-        : "N/A";
-      const cls = audits["cumulative-layout-shift"]
-        ? audits["cumulative-layout-shift"].numericValue
-        : "N/A";
-
-      const fetchTime = data.lighthouseResult.fetchTime || "N/A";
-
-      // Prepare row data for the sheet
-      const rowData = [
-        timestamp,
-        performance,
-        accessibility,
-        bestPractices,
-        seo,
-        fcp,
-        lcp,
-        tbt,
-        cls,
-        fetchTime,
-      ];
+      const rowData = [timestamp, ...psiData];
+      console.log(rowData);
 
       // Append data to the sheet
       sheet.appendRow(rowData);
@@ -132,20 +53,52 @@ function getPageSpeedData() {
   });
 }
 
-// Helper function to fetch data with retries
-function fetchWithRetry(url, retries = 3, delay = 1000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-      if (response.getResponseCode() === 200) {
-        return response;
-      }
-    } catch (error) {
-      console.warn(`Attempt ${i + 1} failed: ${error}`);
-    }
-    Utilities.sleep(delay);
+function pageSpeedApiEndpointUrl(strategy, url) {
+  const apiBaseUrl =
+    "https://www.googleapis.com/pagespeedonline/v5/runPagespeed";
+  const apikey =
+    PropertiesService.getScriptProperties().getProperty("PAGE_SPEED_API_KEY");
+  const apiCategories = [
+    "performance",
+    "accessibility",
+    "best-practices",
+    "seo",
+  ];
+  const categoryParams = apiCategories
+    .map((category) => `&category=${category}`)
+    .join("");
+  return `${apiBaseUrl}?url=${encodeURIComponent(
+    url
+  )}&key=${apikey}&strategy=${strategy}${categoryParams}`;
+}
+
+function fetchDataFromPSI(strategy, url) {
+  const options = { muteHttpExceptions: true };
+  const pageSpeedEndpointUrl = pageSpeedApiEndpointUrl(strategy, url);
+  const response = UrlFetchApp.fetch(pageSpeedEndpointUrl, options);
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error(`API request failed for ${url} (${strategy})`);
   }
-  return null;
+
+  const json = response.getContentText();
+  const parsedJson = JSON.parse(json);
+  const lighthouse = parsedJson.lighthouseResult;
+
+  if (!lighthouse) {
+    throw new Error(`No Lighthouse data found for ${url} (${strategy})`);
+  }
+
+  return [
+    (performanceScore = lighthouse.categories.performance.score * 100),
+    (accessibilityScore = lighthouse.categories.accessibility.score * 100),
+    (bestPracticesScore = lighthouse.categories["best-practices"].score * 100),
+    (seoScore = lighthouse.categories.seo.score * 100),
+    (fcp = lighthouse.audits["first-contentful-paint"].displayValue),
+    (lcp = lighthouse.audits["largest-contentful-paint"].displayValue),
+    (tti = lighthouse.audits.interactive.displayValue),
+    (cls = lighthouse.audits["cumulative-layout-shift"].displayValue),
+  ];
 }
 
 function onOpen() {
